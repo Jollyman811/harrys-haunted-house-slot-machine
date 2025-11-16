@@ -15,7 +15,7 @@ Halloween‑themed PyQt5 slot machine:
 
 ## 2. Clone
 ```powershell
-git clone https://github.com/YOURUSER/HHMSlots.git
+git clone https://github.com/Jollyman811/HHMSlots.git
 cd HHMSlots
 ```
 
