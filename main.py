@@ -1,17 +1,18 @@
 """
-Harry's Haunted House Slot Machine - Casino Edition
+Harry's Haunted House Slot Machine - Casino Edition (UI Upgraded)
 
 - Casino-style PRNG (Xoshiro256**)
 - Virtual reel strips with volatility modes
 - 10-line, left-to-right payline evaluation
 - Progressive jackpots
 - Scatter-triggered free spins with session tracker
+- Upgraded haunted-casino PyQt5 UI
 """
-from __future__ import annotations
-from typing import Optional
+
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QGridLayout, QVBoxLayout,
@@ -20,19 +21,11 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QFont, QMovie
 from PyQt5.QtCore import Qt, QTimer, QUrl
 try:
-    from PyQt5.QtMultimedia import QSoundEffect  # type: ignore
+    from PyQt5.QtMultimedia import QSoundEffect
     _HAS_SOUND = True
 except Exception as _e:
     print(f"[WARN] QtMultimedia not available for sounds: {_e}")
     _HAS_SOUND = False
-
-    class QSoundEffect:  # fallback stub to satisfy type checker
-        def __init__(self): pass
-        def setSource(self, *_a, **_k): pass
-        def setVolume(self, *_a, **_k): pass
-        def setLoopCount(self, *_a, **_k): pass
-        def play(self): pass
-        def stop(self): pass
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +110,7 @@ class Xoshiro256StarStar:
     Good quality PRNG used in many simulations and games.
     """
 
-    def __init__(self, seed_bytes: bytes | None = None):
+    def __init__(self, seed_bytes: Optional[bytes] = None):
         if seed_bytes is None:
             seed_bytes = os.urandom(32)  # 256 bits
         if len(seed_bytes) < 32:
@@ -138,9 +131,9 @@ class Xoshiro256StarStar:
 
     def next_uint64(self) -> int:
         s0, s1, s2, s3 = self.s
-        result = self._rotl(s1 * 5 & ((1 << 64) - 1), 7) * 9 & ((1 << 64) - 1)
+        result = self._rotl((s1 * 5) & ((1 << 64) - 1), 7) * 9 & ((1 << 64) - 1)
 
-        t = s1 << 17 & ((1 << 64) - 1)
+        t = (s1 << 17) & ((1 << 64) - 1)
 
         s2 ^= s0
         s3 ^= s1
@@ -160,7 +153,6 @@ class Xoshiro256StarStar:
         """Return int in [0, n)."""
         if n <= 0:
             raise ValueError("n must be positive")
-        # simple modulo; fine for this context
         return self.next_uint64() % n
 
 
@@ -182,7 +174,6 @@ SYMBOLS = [
 SCATTER_SYMBOL = "freespins"  # pays via feature, not line pays
 
 # Paytable: bet * multiplier for 3, 4, 5 of a kind.
-# (These are "casino-style" relative values, you can tweak.)
 PAYTABLE = {
     "beetle":        {3: 0.5, 4: 1.0, 5: 2.0},
     "spider":        {3: 0.8, 4: 1.5, 5: 3.0},
@@ -216,13 +207,13 @@ BET_OPTIONS = [1, 2, 3, 5, 10, 20, 50, 100]
 START_BALANCE = 10_000
 
 
-def build_reel_strip(volatility: str = "MEDIUM") -> list[str]:
+def build_reel_strip(volatility: str = "MEDIUM") -> list:
     """
     Build a single virtual reel strip for the given volatility profile.
 
     LOW    = more low-pay symbols, fewer top symbols → gentle play
     MEDIUM = balanced
-    HIGH   = fewer low-pay, slightly more mid / top → spikier
+    HIGH   = fewer low-pay, more mid/top → spikier
     """
     base_counts = {
         "beetle": 24,
@@ -243,7 +234,6 @@ def build_reel_strip(volatility: str = "MEDIUM") -> list[str]:
 
     v = volatility.upper()
     if v == "LOW":
-        # more low symbols & fewer high/feature for smooth play
         counts["beetle"] += 8
         counts["spider"] += 6
         counts["bat"] += 4
@@ -252,7 +242,6 @@ def build_reel_strip(volatility: str = "MEDIUM") -> list[str]:
         counts["haunted_house"] = 1
         counts[SCATTER_SYMBOL] = max(1, counts[SCATTER_SYMBOL] - 1)
     elif v == "HIGH":
-        # reduce low symbols slightly, keep scatters, boost some mids
         counts["beetle"] = max(10, counts["beetle"] - 8)
         counts["spider"] = max(8, counts["spider"] - 6)
         counts["ghost"] += 2
@@ -261,9 +250,9 @@ def build_reel_strip(volatility: str = "MEDIUM") -> list[str]:
         counts["mummy"] += 1
         counts["werewolf"] += 1
         counts["haunted_house"] += 1
-    # MEDIUM keeps base
+    # MEDIUM = base
 
-    strip: list[str] = []
+    strip = []
     for sym, n in counts.items():
         strip.extend([sym] * n)
     return strip
@@ -331,34 +320,26 @@ class HauntedHouseSlot:
         self.in_free_spins = using_free_spin
 
         if not using_free_spin:
-            # validate bet
             if bet not in BET_OPTIONS or bet > self.balance:
                 return {"error": "Invalid bet or insufficient balance."}
             self.balance -= bet
 
-            # bump progressive meters (0.01 per $1 bet)
             inc = round(0.01 * bet, 2)
             for j in self.jackpots.values():
                 j["current"] = round(j["current"] + inc, 2)
 
-        # generate visible grid
         grid, stop_indices = self._generate_grid()
 
-        # evaluate line wins
         win_details, base_win = self._evaluate_lines(grid, bet, using_free_spin)
 
-        # scatters (free spins)
         freespins_cells, free_spins_awarded = self._evaluate_scatters(grid)
 
-        # jackpots
         jackpot_wins = self._roll_jackpots(bet)
         jackpot_sum = round(sum(w["amount"] for w in jackpot_wins), 2)
 
-        # total win (line + jackpots)
         total_win = round(base_win + jackpot_sum, 2)
         self.balance = round(self.balance + total_win, 2)
 
-        # free-spin session accounting
         free_spins_just_ended = False
         free_spins_session_final = None
 
@@ -368,7 +349,7 @@ class HauntedHouseSlot:
             if self.free_spins == 0:
                 free_spins_just_ended = True
                 free_spins_session_final = round(self.free_spins_session_total, 2)
-                self.free_spins_session_total = 0.0  # reset for next sequence
+                self.free_spins_session_total = 0.0
 
         result = {
             "grid": grid,
@@ -397,8 +378,8 @@ class HauntedHouseSlot:
         top = index-1, mid = index, bottom = index+1 (with wrap).
         Returns (grid, stop_indices).
         """
-        grid: list[list[str]] = [[ "" for _ in range(self.reels)] for _ in range(self.rows)]
-        stop_indices: list[int] = []
+        grid = [[None for _ in range(self.reels)] for _ in range(self.rows)]
+        stop_indices = []
         for reel_idx in range(self.reels):
             strip = self.reel_strips[reel_idx]
             n = len(strip)
@@ -419,11 +400,9 @@ class HauntedHouseSlot:
         win_details = []
         total = 0.0
 
-        # Free-spins can have higher multiplier; feel free to tweak
         fs_multiplier = 2.0 if using_free_spin else 1.0
 
         for payline_index, line in enumerate(PAYLINES):
-            # collect symbols along this line (5 reels)
             symbols = []
             coords = []
             for reel_idx, row_idx in enumerate(line):
@@ -431,10 +410,9 @@ class HauntedHouseSlot:
                 symbols.append(sym)
                 coords.append((row_idx, reel_idx))
 
-            # find longest run of same non-scatter symbol from left
             first = symbols[0]
             if first == SCATTER_SYMBOL:
-                continue  # scatters don't pay as line wins
+                continue
             run_len = 1
             for i in range(1, self.reels):
                 if symbols[i] == first:
@@ -447,7 +425,6 @@ class HauntedHouseSlot:
                 line_win = bet * base_mult * self.rtp_multiplier * fs_multiplier
                 if line_win > 0:
                     total += line_win
-                    # path is list of (row, col) for highlighting
                     path = coords[:run_len]
                     win_details.append({
                         "type": "adjacent_path",
@@ -476,12 +453,11 @@ class HauntedHouseSlot:
         free_spins_awarded = False
 
         if count >= 3:
-            # simple ladder for demo; tweak to taste
             if count == 3:
                 award = 10
             elif count == 4:
                 award = 12
-            else:  # 5
+            else:
                 award = 15
             self.free_spins += award
             free_spins_awarded = True
@@ -495,11 +471,10 @@ class HauntedHouseSlot:
         Randomly award jackpots. Probability scales with bet size.
         """
         wins = []
-        # scale: at $10 bet, base probabilities apply
         scale = max(0.1, min(5.0, bet / 10.0))
         for name, data in self.jackpots.items():
             p = self._jackpot_base_probs[name] * scale
-            p = min(p, 0.25)  # practical cap
+            p = min(p, 0.25)
             if self.rng.random() < p:
                 amt = round(data["current"], 2)
                 wins.append({"name": name, "amount": amt})
@@ -514,9 +489,10 @@ class HauntedHouseSlot:
 class SlotMachineUI(QWidget):
     def __init__(self):
         super().__init__()
+        self._apply_base_style()
+
         self.setWindowTitle("Harry's Haunted House Slot Machine - Casino Edition")
-        self.setStyleSheet("background-color: #222; color: #fff;")
-        # You can change volatility & rtp_mode here: "LOW"/"MEDIUM"/"HIGH", "TIGHT"/"STANDARD"/"LOOSE"
+        # volatility: "LOW"/"MEDIUM"/"HIGH", rtp_mode: "TIGHT"/"STANDARD"/"LOOSE"
         self.game = HauntedHouseSlot(volatility="MEDIUM", rtp_mode="STANDARD")
         self.sounds = SoundManager()
         self._setup_sounds()
@@ -530,7 +506,7 @@ class SlotMachineUI(QWidget):
         self.target_result = None
 
         # current grid state
-        from random import choice  # for initial random grid only
+        from random import choice
         self.current_grid = [[choice(SYMBOLS) for _ in range(self.game.reels)] for _ in range(self.game.rows)]
 
         # Free spins visual mode
@@ -539,77 +515,306 @@ class SlotMachineUI(QWidget):
 
         self.init_ui()
 
+    # --- Base style with optional background image ---
+
+    def _apply_base_style(self):
+        """
+        Apply base haunted casino style with optional background image.
+        """
+        bg_path = IMAGES_DIR / "haunted_background.jpg"
+        if bg_path.exists():
+            self.setStyleSheet(f"""
+                QWidget {{
+                    background-color: #05030a;
+                    background-image: url("{bg_path.as_posix()}");
+                    background-position: center;
+                    background-repeat: no-repeat;
+                    background-attachment: fixed;
+                    color: #ffffff;
+                }}
+            """)
+        else:
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: qlineargradient(
+                        spread:pad,
+                        x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #05030a, stop:1 #12001f
+                    );
+                    color: #ffffff;
+                }
+            """)
+
     def init_ui(self):
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(12)
 
+        # --- Title + subtitle ---
         title = QLabel("Harry's Haunted House")
-        title.setFont(QFont("Papyrus", 28, QFont.Bold))
+        title.setFont(QFont("Papyrus", 30, QFont.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("""
+            QLabel {
+                padding: 4px 8px;
+                color: #ffd700;
+                text-shadow: 0px 0px 8px #b66dff;
+            }
+        """)
+        subtitle = QLabel("Haunted High-Roller Edition")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet("""
+            QLabel {
+                color: #a8b0ff;
+                font-size: 11pt;
+                letter-spacing: 1px;
+            }
+        """)
         main_layout.addWidget(title)
+        main_layout.addWidget(subtitle)
 
-        # Jackpot strip
-        jp_layout = QHBoxLayout()
+        # --- Jackpot strip inside a glass panel ---
+        jp_frame = QWidget()
+        jp_frame.setStyleSheet("""
+            QWidget {
+                background-color: rgba(5, 5, 20, 180);
+                border-radius: 12px;
+                border: 1px solid rgba(255, 255, 255, 30);
+            }
+        """)
+        jp_layout_outer = QHBoxLayout(jp_frame)
+        jp_layout_outer.setContentsMargins(12, 8, 12, 8)
+        jp_layout_outer.setSpacing(10)
+
         self.jackpot_labels = {}
-        for name, color in [("mini", "#9acd32"), ("minor", "#00ced1"),
-                            ("jackpot", "#ffa500"), ("grand", "#ff1493")]:
-            lbl = QLabel(f"{name.capitalize()}: $0.00")
-            lbl.setStyleSheet(
-                f"padding: 6px 10px; border-radius: 6px; "
-                f"background: {color}20; color: {color}; font-weight: bold;"
-            )
+        for name, color in [
+            ("mini", "#9acd32"),
+            ("minor", "#00ced1"),
+            ("jackpot", "#ffa500"),
+            ("grand", "#ff1493"),
+        ]:
+            block = QWidget()
+            block_layout = QVBoxLayout(block)
+            block_layout.setContentsMargins(8, 4, 8, 4)
+            block_layout.setSpacing(2)
+            tier = QLabel(name.upper())
+            tier.setStyleSheet(f"""
+                QLabel {{
+                    color: {color};
+                    font-weight: bold;
+                    font-size: 9pt;
+                }}
+            """)
+            lbl = QLabel("$0.00")
+            lbl.setStyleSheet("""
+                QLabel {
+                    color: #ffffff;
+                    font-weight: bold;
+                    font-size: 12pt;
+                }
+            """)
             self.jackpot_labels[name] = lbl
-            jp_layout.addWidget(lbl)
-        main_layout.addLayout(jp_layout)
+            block_layout.addWidget(tier)
+            block_layout.addWidget(lbl)
+            jp_layout_outer.addWidget(block)
+
+        main_layout.addWidget(jp_frame)
+
+        # --- Balance + last win row ---
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(20)
 
         self.balance_label = QLabel(f"Balance: ${self.game.balance:.2f}")
-        self.balance_label.setFont(QFont("Arial", 16))
-        main_layout.addWidget(self.balance_label)
+        self.balance_label.setFont(QFont("Arial", 14, QFont.Bold))
+        self.balance_label.setStyleSheet("""
+            QLabel {
+                padding: 6px 10px;
+                border-radius: 10px;
+                background-color: rgba(0, 0, 0, 150);
+                color: #35e0ff;
+            }
+        """)
 
-        self.total_win_label = QLabel("Total Won: $0.00")
-        self.total_win_label.setFont(QFont("Arial", 14))
-        main_layout.addWidget(self.total_win_label)
+        self.total_win_label = QLabel("Last Win: $0.00")
+        self.total_win_label.setFont(QFont("Arial", 12))
+        self.total_win_label.setStyleSheet("""
+            QLabel {
+                padding: 4px 8px;
+                border-radius: 10px;
+                background-color: rgba(0, 0, 0, 120);
+                color: #ffd700;
+            }
+        """)
 
-        bet_layout = QHBoxLayout()
-        bet_layout.addWidget(QLabel("Bet Amount:"))
-        self.bet_combo = QComboBox()
-        for b in BET_OPTIONS:
-            self.bet_combo.addItem(f"${b}", b)
-        bet_layout.addWidget(self.bet_combo)
-        main_layout.addLayout(bet_layout)
+        stats_row.addWidget(self.balance_label)
+        stats_row.addStretch()
+        stats_row.addWidget(self.total_win_label)
+        main_layout.addLayout(stats_row)
 
-        # symbol grid
+        # --- Reel cabinet frame ---
+        cabinet = QWidget()
+        cabinet.setStyleSheet("""
+            QWidget {
+                background-color: rgba(10, 5, 30, 230);
+                border-radius: 20px;
+                border: 2px solid rgba(255, 255, 255, 40);
+            }
+        """)
+        cabinet_layout = QVBoxLayout(cabinet)
+        cabinet_layout.setContentsMargins(16, 16, 16, 16)
+        cabinet_layout.setSpacing(10)
+
+        # Free spins overlay (banner over reels)
+        self.fs_overlay = QLabel("")
+        self.fs_overlay.setFont(QFont("Arial", 18, QFont.Bold))
+        self.fs_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.fs_overlay.setStyleSheet("""
+            QLabel {
+                color: #ffd700;
+                padding: 4px 10px;
+            }
+        """)
+        self.fs_overlay.setVisible(False)
+        cabinet_layout.addWidget(self.fs_overlay)
+
+        # Reels grid
         self.grid_layout = QGridLayout()
+        self.grid_layout.setSpacing(6)
         self.grid_labels = [[QLabel() for _ in range(self.game.reels)] for _ in range(self.game.rows)]
         for r in range(self.game.rows):
             for c in range(self.game.reels):
                 lbl = self.grid_labels[r][c]
-                lbl.setFixedSize(240, 240)
-                lbl.setStyleSheet("border: 2px solid #444; background: #111;")
+                lbl.setFixedSize(150, 150)
+                lbl.setStyleSheet("""
+                    QLabel {
+                        border-radius: 12px;
+                        border: 2px solid #444;
+                        background-color: qradialgradient(
+                            cx:0.5, cy:0.5, radius:0.8,
+                            fx:0.5, fy:0.5,
+                            stop:0 #111111, stop:1 #050509
+                        );
+                    }
+                """)
                 lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.grid_layout.addWidget(lbl, r, c)
-        main_layout.addLayout(self.grid_layout)
+        cabinet_layout.addLayout(self.grid_layout)
 
-        self.spin_btn = QPushButton("Spin!")
-        self.spin_btn.setFont(QFont("Arial", 16, QFont.Bold))
-        self.spin_btn.setStyleSheet("background: orange; color: black;")
+        main_layout.addWidget(cabinet)
+
+        # --- Controls row: bet + spin ---
+        controls_row = QHBoxLayout()
+        controls_row.setContentsMargins(0, 10, 0, 0)
+        controls_row.setSpacing(20)
+
+        bet_panel = QWidget()
+        bet_panel_layout = QVBoxLayout(bet_panel)
+        bet_panel_layout.setContentsMargins(8, 4, 8, 4)
+        bet_panel_layout.setSpacing(4)
+        bet_label = QLabel("BET PER SPIN")
+        bet_label.setStyleSheet("""
+            QLabel {
+                color: #d0d0ff;
+                font-size: 10pt;
+                letter-spacing: 1px;
+            }
+        """)
+        bet_row = QHBoxLayout()
+        dollar = QLabel("$")
+        dollar.setStyleSheet("QLabel { color: #ffffff; }")
+        bet_row.addWidget(dollar)
+        self.bet_combo = QComboBox()
+        for b in BET_OPTIONS:
+            self.bet_combo.addItem(str(b), b)
+        self.bet_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #111;
+                color: #fff;
+                border-radius: 8px;
+                padding: 4px 8px;
+                border: 1px solid #555;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #111;
+                color: #fff;
+                selection-background-color: #333;
+            }
+        """)
+        bet_row.addWidget(self.bet_combo)
+        bet_panel_layout.addWidget(bet_label)
+        bet_panel_layout.addLayout(bet_row)
+
+        controls_row.addWidget(bet_panel)
+        controls_row.addStretch()
+
+        # Big Spin button
+        self.spin_btn = QPushButton("SPIN")
+        self.spin_btn.setFont(QFont("Arial", 18, QFont.Bold))
+        self.spin_btn.setFixedSize(200, 70)
+        self.spin_btn.setStyleSheet("""
+            QPushButton {
+                background-color: qradialgradient(
+                    cx:0.5, cy:0.5, radius:0.8,
+                    fx:0.5, fy:0.5,
+                    stop:0 #ffb347, stop:1 #ff8300
+                );
+                color: #1b0500;
+                border-radius: 35px;
+                border: 3px solid #ffe0a0;
+                padding: 6px 12px;
+            }
+            QPushButton:hover {
+                background-color: qradialgradient(
+                    cx:0.5, cy:0.5, radius:0.8,
+                    fx:0.5, fy:0.5,
+                    stop:0 #ffd47a, stop:1 #ff9f1a
+                );
+            }
+            QPushButton:pressed {
+                background-color: #ff7a00;
+                border: 3px solid #ffaa33;
+            }
+            QPushButton:disabled {
+                background-color: #444;
+                color: #999;
+                border: 3px solid #555;
+            }
+        """)
         self.spin_btn.clicked.connect(self.spin)
-        main_layout.addWidget(self.spin_btn)
+        controls_row.addWidget(self.spin_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
+        controls_row.addStretch()
+        main_layout.addLayout(controls_row)
+
+        # --- Win details + free spins label ---
         self.win_details_label = QLabel("")
-        self.win_details_label.setFont(QFont("Arial", 12))
+        self.win_details_label.setFont(QFont("Arial", 11))
         self.win_details_label.setTextFormat(Qt.TextFormat.RichText)
+        self.win_details_label.setWordWrap(True)
+        self.win_details_label.setStyleSheet("""
+            QLabel {
+                margin-top: 8px;
+                padding: 6px 10px;
+                border-radius: 10px;
+                background-color: rgba(0, 0, 0, 150);
+                color: #ffffff;
+            }
+        """)
         main_layout.addWidget(self.win_details_label)
 
         self.free_spins_label = QLabel("")
-        self.free_spins_label.setFont(QFont("Arial", 16))
+        self.free_spins_label.setFont(QFont("Arial", 14, QFont.Bold))
+        self.free_spins_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.free_spins_label.setStyleSheet("""
+            QLabel {
+                margin-top: 4px;
+                color: #ffd700;
+            }
+        """)
         main_layout.addWidget(self.free_spins_label)
-
-        # Free spins overlay
-        self.fs_overlay = QLabel("")
-        self.fs_overlay.setFont(QFont("Arial", 20, QFont.Black))
-        self.fs_overlay.setStyleSheet("padding: 10px; color: #ffd700;")
-        self.fs_overlay.setVisible(False)
-        main_layout.addWidget(self.fs_overlay)
 
         self.setLayout(main_layout)
 
@@ -618,7 +823,6 @@ class SlotMachineUI(QWidget):
         self._refresh_jackpots()
 
     def _setup_sounds(self):
-        # Adjust filenames to whatever you have in /sounds
         self.sounds.load("credit", "credit.wav", volume=0.5)
         self.sounds.load("chains", "chains_loop.wav", volume=0.4, loop=True)
         self.sounds.load("spin", "reels_spin_loop.wav", volume=0.35, loop=True)
@@ -630,7 +834,7 @@ class SlotMachineUI(QWidget):
         for name, data in self.game.jackpots.items():
             lbl = self.jackpot_labels.get(name)
             if lbl:
-                lbl.setText(f"{name.capitalize()}: ${data['current']:.2f}")
+                lbl.setText(f"${data['current']:.2f}")
 
     # --- Free spins visual helpers ---
 
@@ -650,21 +854,54 @@ class SlotMachineUI(QWidget):
 
     def _apply_free_spin_style(self, on: bool):
         if on:
-            self.setStyleSheet("background-color: #1b002b; color: #fff;")
-            border = "2px solid #8a2be2"
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: qlineargradient(
+                        spread:pad,
+                        x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #1b0033, stop:1 #35005d
+                    );
+                    color: #ffffff;
+                }
+            """)
+            border = "2px solid #b66dff"
+            self.fs_overlay.setText("🎃 FREE SPINS MODE 🎃")
+            self.fs_overlay.setVisible(True)
         else:
-            self.setStyleSheet("background-color: #222; color: #fff;")
+            self._apply_base_style()
             border = "2px solid #444"
+            self.fs_overlay.setVisible(False)
+
         for r in range(self.game.rows):
             for c in range(self.game.reels):
-                self.grid_labels[r][c].setStyleSheet(f"border: {border}; background: #111;")
+                self.grid_labels[r][c].setStyleSheet(f"""
+                    QLabel {{
+                        border-radius: 12px;
+                        border: {border};
+                        background-color: qradialgradient(
+                            cx:0.5, cy:0.5, radius:0.8,
+                            fx:0.5, fy:0.5,
+                            stop:0 #111111, stop:1 #050509
+                        );
+                    }}
+                """)
 
     def _pulse_free_spin_border(self):
         self._pulse_on = not getattr(self, "_pulse_on", False)
-        border = "2px solid #b66dff" if self._pulse_on else "2px solid #8a2be2"
+        border = "2px solid #ffdd55" if self._pulse_on else "2px solid #b66dff"
         for r in range(self.game.rows):
             for c in range(self.game.reels):
-                self.grid_labels[r][c].setStyleSheet(f"border: {border}; background: #111;")
+                self.grid_labels[r][c].setStyleSheet(f"""
+                    QLabel {{
+                        border-radius: 12px;
+                        border: {border};
+                        background-color: qradialgradient(
+                            cx:0.5, cy:0.5, radius:0.8,
+                            fx:0.5, fy:0.5,
+                            stop:0 #111111, stop:1 #050509
+                        );
+                    }}
+                """)
 
     # --- Grid & animations ---
 
@@ -679,7 +916,7 @@ class SlotMachineUI(QWidget):
                 if not pixmap.isNull():
                     lbl.setPixmap(
                         pixmap.scaled(
-                            220, 220,
+                            140, 140,
                             Qt.AspectRatioMode.KeepAspectRatio,
                             Qt.TransformationMode.SmoothTransformation
                         )
@@ -716,9 +953,8 @@ class SlotMachineUI(QWidget):
 
     def spin(self):
         if self.is_spinning:
-            return  # prevent concurrent spin
+            return
 
-        # Clear previous win GIFs
         for lbl_row in self.grid_labels:
             for lbl in lbl_row:
                 if hasattr(lbl, '_movie_refs'):
@@ -731,7 +967,6 @@ class SlotMachineUI(QWidget):
             QMessageBox.warning(self, "Error", result["error"])
             return
 
-        # Prepare animation before final grid
         self.target_result = result
         self.is_spinning = True
         self.spin_tick_count = 0
@@ -787,39 +1022,34 @@ class SlotMachineUI(QWidget):
 
     def _display_result(self, result):
         self.balance_label.setText(f"Balance: ${self.game.balance:.2f}")
-        self.total_win_label.setText(f"Total Won: ${result['win']:.2f}")
+        self.total_win_label.setText(f"Last Win: ${result['win']:.2f}")
 
-        # jackpots strip
         jps = result.get("jackpots", {})
         for name, lbl in self.jackpot_labels.items():
             if name in jps:
-                lbl.setText(f"{name.capitalize()}: ${jps[name]:.2f}")
+                lbl.setText(f"${jps[name]:.2f}")
 
-        # line wins
         if result["win_details"]:
             details_lines = []
             for win in result["win_details"]:
                 details_lines.append(
-                    f"{win['type'].capitalize()}: "
                     f"{win['character'].capitalize()} x{win['count']} "
-                    f"- Won ${win['win']:.2f}"
+                    f"(Line {win['payline_index'] + 1}) - "
+                    f"<b>${win['win']:.2f}</b>"
                 )
                 self.show_grid_animation(win, result["grid"])
             self.win_details_label.setText("<br>".join(details_lines))
         else:
             self.win_details_label.setText("No win this spin.")
 
-        # jackpot wins message
         if result.get("jackpot_wins"):
             jp_msgs = [f"{w['name'].capitalize()} Jackpot +${w['amount']:.2f}!" for w in result["jackpot_wins"]]
             self.win_details_label.setText(self.win_details_label.text() + "<br>" + " ".join(jp_msgs))
             self.sounds.play("jackpot")
 
-        # sounds
         if result['win'] > 0:
             self.sounds.play("win")
 
-        # free spins count label
         if result.get("free_spins", 0) > 0:
             fs_text = f"Free Spins: {result['free_spins']}"
             if result.get("free_spins_awarded"):
@@ -829,7 +1059,6 @@ class SlotMachineUI(QWidget):
         else:
             self.free_spins_label.setText("")
 
-        # scatter animation
         if result.get("freespins_cells"):
             gif_path = ANIMATIONS_DIR / "freespins.gif"
             if gif_path.exists():
@@ -846,7 +1075,6 @@ class SlotMachineUI(QWidget):
             else:
                 print(f"[MISS] Free spins animation not found: {gif_path}")
 
-        # free spins mode visuals
         in_fs = bool(result.get("in_free_spins")) or (result.get("free_spins", 0) > 0)
         if in_fs and not self._was_in_free_spins:
             self._enter_free_spins_mode()
@@ -856,7 +1084,7 @@ class SlotMachineUI(QWidget):
             total = result.get("free_spins_session_total", 0.0)
             if result.get("free_spins_just_ended"):
                 total = result.get("free_spins_session_final", total)
-            self.fs_overlay.setText(f"Free Spin Wins: ${total:.2f}")
+            self.fs_overlay.setText(f"🎃 FREE SPINS MODE 🎃\nTotal: ${total:.2f}")
             self.fs_overlay.setVisible(True)
 
         if result.get("free_spins_just_ended"):
@@ -872,6 +1100,6 @@ class SlotMachineUI(QWidget):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = SlotMachineUI()
-    window.resize(700, 800)
+    window.resize(900, 900)
     window.show()
     sys.exit(app.exec_())
